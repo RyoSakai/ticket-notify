@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '*/5 * * * *'   # 5分おき（UTC）
   workflow_dispatch:          # 手動実行ボタン
+    inputs:
+      rewind_cursor:
+        description: 'テスト用：カーソルを巻き戻して通知を強制送信'
+        type: boolean
+        default: false
 
 jobs:
   poll:
@@ -17,6 +22,10 @@ jobs:
           path: state.json
           key: peatix-state-${{ github.run_id }}
           restore-keys: peatix-state-
+
+      - name: テスト用カーソル巻き戻し
+        if: ${{ inputs.rewind_cursor == true }}
+        run: echo '{"peatix_4999274":{"last_poll_time":"2026-05-08T06:55:13Z"}}' > state.json
 
       - name: .env を構築
         run: |
