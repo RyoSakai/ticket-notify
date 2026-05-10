@@ -1,0 +1,36 @@
+name: Peatix 新着通知
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # 5分おき（UTC）
+  workflow_dispatch:          # 手動実行ボタン
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: state.json を復元
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: peatix-state-${{ github.run_id }}
+          restore-keys: peatix-state-
+
+      - name: .env を構築
+        run: |
+          cp config.env .env
+          echo "PEATIX_EMAIL=${{ secrets.PEATIX_EMAIL }}" >> .env
+          echo "PEATIX_PASSWORD=${{ secrets.PEATIX_PASSWORD }}" >> .env
+          echo "SLACK_TOKEN=${{ secrets.SLACK_TOKEN }}" >> .env
+
+      - name: Peatix ポーリング実行
+        run: python3 poll_peatix.py
+
+      - name: state.json を保存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: peatix-state-${{ github.run_id }}

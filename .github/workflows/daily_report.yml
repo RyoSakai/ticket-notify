@@ -1,0 +1,23 @@
+name: 日次進捗レポート
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 毎日 0:00 UTC = 9:00 JST
+  workflow_dispatch:        # 手動実行ボタン
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: .env を構築
+        run: |
+          cp config.env .env
+          echo "PEATIX_EMAIL=${{ secrets.PEATIX_EMAIL }}" >> .env
+          echo "PEATIX_PASSWORD=${{ secrets.PEATIX_PASSWORD }}" >> .env
+          echo "SLACK_TOKEN=${{ secrets.SLACK_TOKEN }}" >> .env
+          echo "EVENTHUB_API_KEY=${{ secrets.EVENTHUB_API_KEY }}" >> .env
+
+      - name: 日次レポート送信
+        run: python3 daily_report.py
