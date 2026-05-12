@@ -77,8 +77,7 @@ def build_message(sale: dict, event_name: str) -> str:
     attendances = sale.get("attendances") or []
     ticket = attendances[0].get("ticket_name", "") if attendances else ""
 
-    lines = [f"🎫 *Peatix チケット購入* {SLACK_RYO}", ""]
-    lines.append(f"• イベント: {event_name}（Peatix）")
+    lines = [f"🎫 *{event_name} チケット購入（Peatix）* {SLACK_RYO}", ""]
     lines.append(f"• 参加者:   {name}")
     if ticket:
         lines.append(f"• チケット: {ticket}")
