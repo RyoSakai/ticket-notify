@@ -27,6 +27,19 @@ STATE_FILE = BASE_DIR / "state.json"
 SLACK_RYO = "<@U08FS2E4B>"
 
 
+# ── ユーティリティ ────────────────────────────────────────────
+
+def parse_mapping(raw: str) -> dict[str, str]:
+    """'key1:val1,key2:val2' 形式の文字列を dict に変換する。"""
+    result = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if ":" in item:
+            k, v = item.split(":", 1)
+            result[k.strip()] = v.strip()
+    return result
+
+
 # ── 状態管理 ──────────────────────────────────────────────────
 
 def load_state() -> dict:
@@ -56,17 +69,16 @@ def parse_dt(dt_str: str) -> datetime | None:
 
 # ── Slack メッセージ構築 ──────────────────────────────────────
 
-def build_message(sale: dict) -> str:
+def build_message(sale: dict, event_name: str) -> str:
     name   = sale.get("buyer_name") or "(名前なし)"
     price  = sale.get("amount_paid") or 0
     dt     = parse_dt(sale.get("created", ""))
     dt_jst = (dt + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M JST") if dt else ""
-    # チケット名は attendances[0] から取得
     attendances = sale.get("attendances") or []
     ticket = attendances[0].get("ticket_name", "") if attendances else ""
 
     lines = [f"🎫 *Peatix チケット購入* {SLACK_RYO}", ""]
-    lines.append("• イベント: MAP 2026（Peatix）")
+    lines.append(f"• イベント: {event_name}（Peatix）")
     lines.append(f"• 参加者:   {name}")
     if ticket:
         lines.append(f"• チケット: {ticket}")
@@ -85,6 +97,7 @@ def poll_one_event(
     event_id: str,
     token: str,
     channel: str,
+    event_name: str,
     dry_run: bool,
 ) -> None:
     state_key = f"peatix_{event_id}"
@@ -132,7 +145,7 @@ def poll_one_event(
     print(f"[Peatix:{event_id}] 新規購入者: {len(new_paid)}件")
 
     for s in new_paid:
-        msg = build_message(s)
+        msg = build_message(s, event_name)
         print(f"  通知: {s.get('buyer_name') or '(不明)'} @ {s.get('created', '')}")
         if dry_run:
             print("[DRY-RUN] Slack 送信スキップ:\n" + msg)
@@ -154,29 +167,35 @@ def poll_one_event(
 def main() -> None:
     dry_run = "--dry-run" in sys.argv
 
-    env           = load_env(str(ENV_FILE))
-    email         = os.environ.get("PEATIX_EMAIL")     or env.get("PEATIX_EMAIL")
-    password      = os.environ.get("PEATIX_PASSWORD")  or env.get("PEATIX_PASSWORD")
-    event_ids_raw = os.environ.get("PEATIX_EVENT_IDS") or env.get("PEATIX_EVENT_IDS", "")
-    slack_token   = os.environ.get("SLACK_TOKEN")      or env.get("SLACK_TOKEN")
-    channel       = os.environ.get("SLACK_CHANNEL")    or env.get("SLACK_CHANNEL", "#ryosakai_notify")
+    env               = load_env(str(ENV_FILE))
+    email             = os.environ.get("PEATIX_EMAIL")          or env.get("PEATIX_EMAIL")
+    password          = os.environ.get("PEATIX_PASSWORD")       or env.get("PEATIX_PASSWORD")
+    event_ids_raw     = os.environ.get("PEATIX_EVENT_IDS")      or env.get("PEATIX_EVENT_IDS", "")
+    slack_token       = os.environ.get("SLACK_TOKEN")           or env.get("SLACK_TOKEN")
+    default_channel   = os.environ.get("SLACK_CHANNEL")         or env.get("SLACK_CHANNEL", "#ryosakai_notify")
+    channels_raw      = os.environ.get("PEATIX_EVENT_CHANNELS") or env.get("PEATIX_EVENT_CHANNELS", "")
+    names_raw         = os.environ.get("PEATIX_EVENT_NAMES")    or env.get("PEATIX_EVENT_NAMES", "")
 
     missing = [k for k, v in [
-        ("PEATIX_EMAIL",    email),
-        ("PEATIX_PASSWORD", password),
+        ("PEATIX_EMAIL",     email),
+        ("PEATIX_PASSWORD",  password),
         ("PEATIX_EVENT_IDS", event_ids_raw),
-        ("SLACK_TOKEN",     slack_token),
+        ("SLACK_TOKEN",      slack_token),
     ] if not v]
     if missing:
         print(f"必須環境変数が未設定: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
 
-    event_ids = [i.strip() for i in event_ids_raw.split(",") if i.strip()]
-    client    = PeatixClient(email, password)
-    state     = load_state()
+    channel_map = parse_mapping(channels_raw)   # {event_id: channel}
+    name_map    = parse_mapping(names_raw)       # {event_id: event_name}
+    event_ids   = [i.strip() for i in event_ids_raw.split(",") if i.strip()]
+    client      = PeatixClient(email, password)
+    state       = load_state()
 
     for event_id in event_ids:
-        poll_one_event(client, state, event_id, slack_token, channel, dry_run)
+        channel    = channel_map.get(event_id, default_channel)
+        event_name = name_map.get(event_id, f"イベント {event_id}")
+        poll_one_event(client, state, event_id, slack_token, channel, event_name, dry_run)
 
     save_state(state)
     print("state.json 保存完了")
