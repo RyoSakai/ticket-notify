@@ -23,19 +23,16 @@ jobs:
           key: peatix-state-${{ github.run_id }}
           restore-keys: peatix-state-
 
-      - name: テスト用カーソル巻き戻し（新規イベントのみ・dry-run 専用）
+      - name: MABC の cursor を過去に設定（既存購入を全件通知）
         if: ${{ inputs.rewind_cursor == true }}
         run: |
-          # state.json が存在する場合は既存 cursor を保持しつつ対象イベントだけ削除
-          if [ -f state.json ]; then
-            python3 -c "
-import json, sys
-s = json.loads(open('state.json').read())
-s.pop('peatix_4831575', None)
+          python3 -c "
+import json
+s = json.loads(open('state.json').read()) if __import__('os').path.exists('state.json') else {}
+s['peatix_4831575'] = {'last_poll_time': '2020-01-01T00:00:00Z'}
 open('state.json','w').write(json.dumps(s, indent=2))
-print('peatix_4831575 の cursor をリセット')
+print('peatix_4831575 の cursor を 2020-01-01 に設定（全件通知モード）')
 "
-          fi
 
       - name: .env を構築
         run: |
