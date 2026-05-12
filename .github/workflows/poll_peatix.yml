@@ -23,9 +23,19 @@ jobs:
           key: peatix-state-${{ github.run_id }}
           restore-keys: peatix-state-
 
-      - name: テスト用カーソル巻き戻し
+      - name: テスト用カーソル巻き戻し（新規イベントのみ・dry-run 専用）
         if: ${{ inputs.rewind_cursor == true }}
-        run: echo '{"peatix_4999274":{"last_poll_time":"2026-05-08T06:55:13Z"}}' > state.json
+        run: |
+          # state.json が存在する場合は既存 cursor を保持しつつ対象イベントだけ削除
+          if [ -f state.json ]; then
+            python3 -c "
+import json, sys
+s = json.loads(open('state.json').read())
+s.pop('peatix_4831575', None)
+open('state.json','w').write(json.dumps(s, indent=2))
+print('peatix_4831575 の cursor をリセット')
+"
+          fi
 
       - name: .env を構築
         run: |
