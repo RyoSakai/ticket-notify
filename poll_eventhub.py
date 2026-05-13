@@ -87,22 +87,37 @@ def poll_one_event(
             users,
             key=lambda u: u.get("createdAt") or u.get("purchasedAt") or "",
         )
+        # Slack 送信に失敗した通知より先には cursor を進めない（次回再送のため）
+        all_sent_ok = True
+        last_sent_ts = ""
         for user in sorted_users:
             msg = build_message(user, event_key, event_name)
+            ts  = user.get("createdAt") or user.get("purchasedAt") or ""
             print(f"  通知: {user.get('name') or user.get('email') or '(不明)'}")
 
             if dry_run:
                 print("  [DRY-RUN] Slack 送信スキップ\n" + msg)
+                last_sent_ts = ts or last_sent_ts
+            elif send_slack(token, channel, msg):
+                last_sent_ts = ts or last_sent_ts
             else:
-                send_slack(token, channel, msg)
+                all_sent_ok = False
+                print(
+                    f"[{event_key}] Slack 送信失敗 — 以降の通知と cursor 更新を次回に延期",
+                    file=sys.stderr,
+                )
+                break
 
-        # カーソルを max(createdAt) + 1秒 に進める
-        latest = max_created_at(users)
-        if latest:
-            state[event_key]["last_poll_time"] = add_seconds(latest, 1)
+        # 全件成功: max(createdAt) + 1秒 まで進める
+        # 一部失敗: 成功した最後の通知の createdAt + 1秒 までしか進めない
+        target_ts = max_created_at(users) if all_sent_ok else last_sent_ts
+        if target_ts:
+            state[event_key]["last_poll_time"] = add_seconds(target_ts, 1)
     else:
-        # 新規なし: カーソルを現在時刻に更新してギャップ縮小
-        state[event_key]["last_poll_time"] = add_seconds(now_utc_iso(), -10)
+        # 新規なし: カーソルを「今 - 10秒」まで前進させる（巻き戻しはしない）
+        candidate = add_seconds(now_utc_iso(), -10)
+        if candidate > state[event_key]["last_poll_time"]:
+            state[event_key]["last_poll_time"] = candidate
 
     print(f"[{event_key}] 完了 → 次の cursor={state[event_key]['last_poll_time']}")
 

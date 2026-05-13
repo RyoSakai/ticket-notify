@@ -143,17 +143,31 @@ def poll_one_event(
     )
     print(f"[Peatix:{event_id}] 新規購入者: {len(new_paid)}件")
 
+    # Slack 送信に失敗した通知より先には cursor を進めない（次回再送のため）
+    all_sent_ok = True
+    last_sent_dt: datetime | None = None
     for s in new_paid:
-        msg = build_message(s, event_name)
+        msg     = build_message(s, event_name)
+        sale_dt = parse_dt(s.get("created", ""))
         print(f"  通知: {s.get('buyer_name') or '(不明)'} @ {s.get('created', '')}")
         if dry_run:
             print("[DRY-RUN] Slack 送信スキップ:\n" + msg)
+            last_sent_dt = sale_dt or last_sent_dt
+        elif send_slack(token, channel, msg):
+            last_sent_dt = sale_dt or last_sent_dt
         else:
-            send_slack(token, channel, msg)
+            all_sent_ok = False
+            print(
+                f"[Peatix:{event_id}] Slack 送信失敗 — 以降の通知と cursor 更新を次回に延期",
+                file=sys.stderr,
+            )
+            break
 
-    # cursor を更新（max_dt + 1s）
-    if max_dt:
-        new_cursor = (max_dt + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # 全件成功: 未払い注文を含む最大 created まで進める
+    # 一部失敗: 成功した最後の通知の created までしか進めない
+    target_dt = max_dt if all_sent_ok else last_sent_dt
+    if target_dt:
+        new_cursor = (target_dt + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         if new_cursor != last_str:
             state[state_key] = {"last_poll_time": new_cursor}
             print(f"[Peatix:{event_id}] cursor 更新: {last_str} → {new_cursor}")
