@@ -2,7 +2,7 @@ name: Peatix 新着通知
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # 5分おき（UTC）
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'   # 5分おき（オフセット2分、混雑回避）
   workflow_dispatch:          # 手動実行ボタン
     inputs:
       rewind_cursor:
