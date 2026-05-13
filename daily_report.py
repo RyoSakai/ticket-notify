@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from eventhub_api import EventHubAPIError, EventHubClient, EventHubRateLimitError
-from peatix_api import PeatixAPIError, get_view_data
+from peatix_api import PeatixAPIError, PeatixAuthError, PeatixClient
 from slack_notify import load_env, send_slack
 
 BASE_DIR = Path(__file__).parent
@@ -68,21 +68,25 @@ def aggregate_by_ticket(client: EventHubClient, event_key: str) -> dict:
     return _build_agg(cat_count, cat_amount)
 
 
-def aggregate_peatix(event_slug: str) -> dict:
-    """get_view_data（認証不要）からチケット別 count・amount を集計する。
-    チケット名は EventHub と同形式（"メインチケット｜カテゴリ_..."）なので extract_category を共用。
+def aggregate_peatix(client: PeatixClient, event_id: str) -> dict:
+    """Peatix /saleses API（認証あり）からチケット別 count・amount を集計する。
+    支払済み・未キャンセルのみ対象。
+    1注文に複数 attendances がある場合は人数として個別カウントする。
     """
-    data = get_view_data(event_slug)
-    tickets = data.get("json_data", {}).get("event", {}).get("tickets") or []
+    attendees = client.get_attendees(event_id)
+    paid = [s for s in attendees if s.get("is_paid") == 1 and s.get("is_canceled") == 0]
+
     cat_count: dict[str, int] = defaultdict(int)
     cat_amount: dict[str, int] = defaultdict(int)
 
-    for ticket in tickets:
-        price = int(ticket.get("price", 0))
-        cat = extract_category(ticket.get("name", ""))
-        count = int(ticket.get("seatsSold", 0))
-        cat_count[cat] += count
-        cat_amount[cat] += count * price
+    for sale in paid:
+        attendances = sale.get("attendances") or []
+        if not attendances:
+            continue
+        ticket_name = attendances[0].get("ticket_name", "")
+        cat = extract_category(ticket_name)
+        cat_count[cat] += len(attendances)
+        cat_amount[cat] += int(sale.get("amount_paid") or 0)
 
     return _build_agg(cat_count, cat_amount)
 
@@ -236,11 +240,13 @@ def main() -> None:
     dry_run = "--dry-run" in sys.argv
 
     env = load_env(str(ENV_FILE))
-    api_key          = os.environ.get("EVENTHUB_API_KEY")    or env.get("EVENTHUB_API_KEY")
-    slack_token      = os.environ.get("SLACK_TOKEN")         or env.get("SLACK_TOKEN")
-    event_keys_raw   = os.environ.get("EVENTHUB_EVENT_KEYS") or env.get("EVENTHUB_EVENT_KEYS", "")
-    peatix_slugs_raw = os.environ.get("PEATIX_EVENT_SLUGS")  or env.get("PEATIX_EVENT_SLUGS", "")
-    channel          = os.environ.get("SLACK_CHANNEL")       or env.get("SLACK_CHANNEL", "#ryosakai_notify")
+    api_key             = os.environ.get("EVENTHUB_API_KEY")    or env.get("EVENTHUB_API_KEY")
+    slack_token         = os.environ.get("SLACK_TOKEN")         or env.get("SLACK_TOKEN")
+    event_keys_raw      = os.environ.get("EVENTHUB_EVENT_KEYS") or env.get("EVENTHUB_EVENT_KEYS", "")
+    peatix_email        = os.environ.get("PEATIX_EMAIL")        or env.get("PEATIX_EMAIL")
+    peatix_password     = os.environ.get("PEATIX_PASSWORD")     or env.get("PEATIX_PASSWORD")
+    peatix_event_ids_raw = os.environ.get("PEATIX_EVENT_IDS")   or env.get("PEATIX_EVENT_IDS", "")
+    channel             = os.environ.get("SLACK_CHANNEL")       or env.get("SLACK_CHANNEL", "#ryosakai_notify")
 
     missing = [k for k, v in [("EVENTHUB_API_KEY", api_key), ("SLACK_TOKEN", slack_token), ("EVENTHUB_EVENT_KEYS", event_keys_raw)] if not v]
     if missing:
@@ -249,7 +255,12 @@ def main() -> None:
 
     targets_count, targets_amount = load_targets(env)
     client = EventHubClient(api_key)
-    peatix_slugs = [s.strip() for s in peatix_slugs_raw.split(",") if s.strip()]
+
+    # Peatix クライアント（認証情報があれば作成）
+    peatix_client = None
+    peatix_event_ids = [i.strip() for i in peatix_event_ids_raw.split(",") if i.strip()]
+    if peatix_email and peatix_password and peatix_event_ids:
+        peatix_client = PeatixClient(peatix_email, peatix_password)
 
     for event_key in [k.strip() for k in event_keys_raw.split(",") if k.strip()]:
         print(f"[EventHub:{event_key}] チケット別集計中...")
@@ -266,15 +277,15 @@ def main() -> None:
 
         event_name = client.get_event_name(event_key) or event_key
 
-        # Peatix 集計（slugs が設定されていれば最初の1件を対応づける）
+        # Peatix 集計（最初の event_id を MAP 2026 として対応づける）
         peatix_agg = None
-        if peatix_slugs:
-            slug = peatix_slugs[0]
-            print(f"[Peatix:{slug}] チケット別集計中...")
+        if peatix_client:
+            event_id = peatix_event_ids[0]
+            print(f"[Peatix:{event_id}] チケット別集計中...")
             try:
-                peatix_agg = aggregate_peatix(slug)
-            except PeatixAPIError as e:
-                print(f"[Peatix:{slug}] API エラー: {e} — Peatix セクションをスキップ", file=sys.stderr)
+                peatix_agg = aggregate_peatix(peatix_client, event_id)
+            except (PeatixAPIError, PeatixAuthError) as e:
+                print(f"[Peatix:{event_id}] API エラー: {e} — Peatix セクションをスキップ", file=sys.stderr)
 
         blocks, fallback = build_daily_blocks(eh_agg, targets_count, targets_amount, event_name, peatix_agg)
 
